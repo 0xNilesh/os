@@ -271,6 +271,7 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 			fmt.Printf("Gas Limit: %d\n", gas)
 
 			contract := NewContract(caller, AccountRef(addrCopy), value, gas)
+			contract.SetCallCode(&addrCopy, evm.StateDB.GetCodeHash(addrCopy), code)
 			codeHash := evm.StateDB.GetCodeHash(addrCopy)
 			fmt.Printf("Code Hash: %s\n", codeHash.Hex())
 
@@ -288,10 +289,10 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 
 	if err != nil {
 		fmt.Printf("Execution failed, reverting to snapshot: %v\n", err)
-		evm.StateDB.RevertToSnapshot(snapshot)
+		// evm.StateDB.RevertToSnapshot(snapshot)
 		if err != ErrExecutionReverted {
 			fmt.Printf("Non-revert error, setting gas to 0\n")
-			gas = 0
+			// gas = 0
 		}
 	} else {
 		fmt.Printf("Execution successful\n")
