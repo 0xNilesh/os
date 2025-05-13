@@ -5,6 +5,7 @@ package keeper
 
 import (
 	"encoding/json"
+	"fmt"
 	"math/big"
 
 	errorsmod "cosmossdk.io/errors"
@@ -34,6 +35,13 @@ func (k Keeper) CallEVM(
 			errorsmod.Wrap(err, "failed to create transaction data").Error(),
 		)
 	}
+	fmt.Print("CallEVM: ")
+	fmt.Println("data", data)
+	fmt.Println("contract", contract)
+	fmt.Println("from", from)
+	fmt.Println("method", method)
+	fmt.Println("args", args)
+	fmt.Println("commit", commit)
 
 	resp, err := k.CallEVMWithData(ctx, from, &contract, data, commit)
 	if err != nil {
@@ -55,7 +63,15 @@ func (k Keeper) CallEVMWithData(
 		return nil, err
 	}
 
+	fmt.Print("CallEVMWithData: ")
+	fmt.Println("data", data)
+	fmt.Println("contract", contract)
+	fmt.Println("from", from)
+	fmt.Println("commit", commit)
+	fmt.Println("nonce", nonce)
+
 	gasCap := config.DefaultGasCap
+	fmt.Println("GasCap", gasCap)
 	if commit {
 		args, err := json.Marshal(types.TransactionArgs{
 			From: &from,
@@ -63,18 +79,34 @@ func (k Keeper) CallEVMWithData(
 			Data: (*hexutil.Bytes)(&data),
 		})
 		if err != nil {
+			fmt.Printf("Failed to marshal tx args: %v\n", err)
 			return nil, errorsmod.Wrapf(errortypes.ErrJSONMarshal, "failed to marshal tx args: %s", err.Error())
 		}
 
+		fmt.Printf("Estimating gas with args: %s\n", string(args))
 		gasRes, err := k.EstimateGasInternal(ctx, &types.EthCallRequest{
 			Args:   args,
 			GasCap: config.DefaultGasCap,
 		}, types.Internal)
 		if err != nil {
+			fmt.Printf("Gas estimation failed: %v\n", err)
 			return nil, err
 		}
+		fmt.Printf("Estimated gas: %d\n", gasRes.Gas)
 		gasCap = gasRes.Gas
 	}
+
+	fmt.Printf("Creating new message with parameters:\n")
+	fmt.Printf("From: %s\n", from.Hex())
+	fmt.Printf("To: %s\n", contract.Hex())
+	fmt.Printf("Nonce: %d\n", nonce)
+	fmt.Printf("Amount: %s\n", big.NewInt(0).String())
+	fmt.Printf("GasCap: %d\n", gasCap)
+	fmt.Printf("GasFeeCap: %s\n", big.NewInt(0).String())
+	fmt.Printf("GasTipCap: %s\n", big.NewInt(0).String())
+	fmt.Printf("GasPrice: %s\n", big.NewInt(0).String())
+	fmt.Printf("Data length: %d bytes\n", len(data))
+	fmt.Printf("IsFake: %v\n", !commit)
 
 	msg := ethtypes.NewMessage(
 		from,
@@ -89,15 +121,27 @@ func (k Keeper) CallEVMWithData(
 		ethtypes.AccessList{}, // AccessList
 		!commit,               // isFake
 	)
+	fmt.Println("Message created:", msg)
+	fmt.Println(ethtypes.AccessList{})
 
+	fmt.Printf("Applying message with commit=%v\n", commit)
 	res, err := k.ApplyMessage(ctx, msg, types.NewNoOpTracer(), commit)
 	if err != nil {
+		fmt.Printf("ApplyMessage error: %v\n", err)
 		return nil, err
 	}
 
+	fmt.Printf("Message execution result:\n")
+	fmt.Printf("Gas used: %d\n", res.GasUsed)
+	fmt.Printf("VM Error: %v\n", res.VmError)
+	fmt.Printf("Ret: %x\n", res.Ret)
+
 	if res.Failed() {
+		fmt.Printf("Transaction failed with VM error: %s\n", res.VmError)
 		return nil, errorsmod.Wrap(types.ErrVMExecution, res.VmError)
 	}
 
+	fmt.Printf("Transaction successful. Gas used: %d, Return data length: %d bytes\n",
+		res.GasUsed, len(res.Ret))
 	return res, nil
 }

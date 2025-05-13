@@ -4,6 +4,7 @@
 package vm
 
 import (
+	"fmt"
 	"math/big"
 	"sync/atomic"
 	"time"
@@ -177,24 +178,38 @@ func (evm *EVM) WithInterpreter(interpreter Interpreter) {
 // execution error or failed value transfer.
 func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error) {
 	if err = evm.hooks.CallHook(evm, caller.Address(), addr); err != nil {
+		fmt.Println("CallHook failed")
+		fmt.Println(err)
 		return nil, gas, err
 	}
 
 	// Fail if we're trying to execute above the call depth limit
 	if evm.depth > int(params.CallCreateDepth) {
+		fmt.Println("Call depth exceeded")
+		fmt.Println(evm.depth)
+		fmt.Println(params.CallCreateDepth)
 		return nil, gas, ErrDepth
 	}
 	// Fail if we're trying to transfer more than the available balance
 	if value.Sign() != 0 && !evm.Context.CanTransfer(evm.StateDB, caller.Address(), value) {
+		fmt.Println("Insufficient balance")
+		fmt.Println("Caller address:", caller.Address().Hex())
+		fmt.Println("Value:", value.String())
+		fmt.Println("Gas:", gas)
 		return nil, gas, ErrInsufficientBalance
 	}
 
 	snapshot := evm.StateDB.Snapshot()
+	fmt.Println("Snapshot taken: ", snapshot)
 	p, isPrecompile := evm.Precompile(addr)
+	fmt.Println("Precompile check for address: ", p)
+	fmt.Println("Is precompile: ", isPrecompile)
 
 	if !evm.StateDB.Exist(addr) {
 		if !isPrecompile && evm.chainRules.IsEIP158 && value.Sign() == 0 {
 			// Calling a non existing account, don't do anything, but ping the tracer
+			fmt.Println("Account does not exist, pinging tracer")
+			fmt.Println("debug: ", evm.Config.Debug)
 			if evm.Config.Debug {
 				if evm.depth == 0 {
 					evm.Config.Tracer.CaptureStart(evm, caller.Address(), addr, false, input, gas, value)
@@ -211,6 +226,8 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 	evm.Context.Transfer(evm.StateDB, caller.Address(), addr, value)
 
 	// Capture the tracer start/end events in debug mode
+	fmt.Println("Account exist, pinging tracer")
+	fmt.Println("debug: ", evm.Config.Debug)
 	if evm.Config.Debug {
 		if evm.depth == 0 {
 			evm.Config.Tracer.CaptureStart(evm, caller.Address(), addr, false, input, gas, value)
@@ -226,29 +243,64 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 		}
 	}
 
-	// It is allowed to call precompiles, even via call -- as opposed to callcode, staticcall and delegatecall it can also modify state
+	fmt.Printf("\nCall Execution Details:\n")
+	fmt.Printf("Precompile check for address: %s\n", addr.Hex())
 	if isPrecompile {
+		fmt.Printf("Executing precompiled contract at %s\n", addr.Hex())
+		fmt.Printf("Input length: %d bytes\n", len(input))
+		fmt.Printf("Gas available: %d\n", gas)
+		fmt.Printf("Value: %s\n", value.String())
 		ret, gas, err = evm.RunPrecompiledContract(p, caller, input, gas, value, false)
+		fmt.Printf("Precompile execution result:\n")
+		fmt.Printf("Return data length: %d\n", len(ret))
+		fmt.Printf("Remaining gas: %d\n", gas)
+		fmt.Printf("Error: %v\n", err)
 	} else {
-		// Initialise a new contract and set the code that is to be used by the EVM.
-		// The contract is a scoped environment for this execution context only.
 		code := evm.StateDB.GetCode(addr)
+		fmt.Printf("Contract code length: %d bytes\n", len(code))
+
 		if len(code) == 0 {
-			ret, err = nil, nil // gas is unchanged
+			fmt.Printf("No code at address %s, returning early\n", addr.Hex())
+			ret, err = nil, nil
 		} else {
 			addrCopy := addr
-			// If the account has no code, we can abort here
-			// The depth-check is already done, and precompiles handled above
+			fmt.Printf("Creating new contract:\n")
+			fmt.Printf("Caller: %s\n", caller.Address().Hex())
+			fmt.Printf("Contract Address: %s\n", addrCopy.Hex())
+			fmt.Printf("Value: %s\n", value.String())
+			fmt.Printf("Gas Limit: %d\n", gas)
+
 			contract := NewContract(caller, AccountRef(addrCopy), value, gas)
-			contract.SetCallCode(&addrCopy, evm.StateDB.GetCodeHash(addrCopy), code)
+			codeHash := evm.StateDB.GetCodeHash(addrCopy)
+			fmt.Printf("Code Hash: %s\n", codeHash.Hex())
+
+			contract.SetCallCode(&addrCopy, codeHash, code)
+			fmt.Printf("Starting interpreter run with input length: %d bytes\n", len(input))
+
 			ret, err = evm.interpreter.Run(contract, input, false)
 			gas = contract.Gas
+			fmt.Printf("Interpreter execution complete:\n")
+			fmt.Printf("Return data length: %d bytes\n", len(ret))
+			fmt.Printf("Remaining gas: %d\n", gas)
+			fmt.Printf("Error: %v\n", err)
 		}
+	}
+
+	if err != nil {
+		fmt.Printf("Execution failed, reverting to snapshot: %v\n", err)
+		evm.StateDB.RevertToSnapshot(snapshot)
+		if err != ErrExecutionReverted {
+			fmt.Printf("Non-revert error, setting gas to 0\n")
+			gas = 0
+		}
+	} else {
+		fmt.Printf("Execution successful\n")
 	}
 	// When an error was returned by the EVM or when setting the creation code
 	// above we revert to the snapshot and consume any gas remaining. Additionally
 	// when we're in homestead this also counts for code storage gas errors.
 	if err != nil {
+		fmt.Printf("Error occurred, reverting to snapshot: %v\n", err)
 		evm.StateDB.RevertToSnapshot(snapshot)
 		if err != ErrExecutionReverted {
 			gas = 0

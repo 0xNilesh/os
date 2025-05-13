@@ -267,12 +267,28 @@ func (k *Keeper) ApplyTransaction(ctx sdk.Context, tx *ethtypes.Transaction) (*t
 
 // ApplyMessage calls ApplyMessageWithConfig with an empty TxConfig.
 func (k *Keeper) ApplyMessage(ctx sdk.Context, msg core.Message, tracer vm.EVMLogger, commit bool) (*types.MsgEthereumTxResponse, error) {
+	fmt.Printf("ApplyMessage called with parameters:\n")
+	fmt.Printf("From: %s\n", msg.From().Hex())
+	// if msg.To() != nil {
+	// 	fmt.Printf("To: %s\n", msg.To().Hex())
+	// } else {
+	// 	fmt.Printf("To: nil (contract creation)\n")
+	// }
+	fmt.Printf("Value: %s\n", msg.Value().String())
+	fmt.Printf("Gas Limit: %d\n", msg.Gas())
+	fmt.Printf("Commit: %v\n", commit)
+	fmt.Printf("Data length: %d bytes\n", len(msg.Data()))
+
 	cfg, err := k.EVMConfig(ctx, sdk.ConsAddress(ctx.BlockHeader().ProposerAddress))
 	if err != nil {
+		fmt.Printf("Failed to load EVM config: %v\n", err)
 		return nil, errorsmod.Wrap(err, "failed to load evm config")
 	}
 
+	fmt.Printf("Chain Config: %+v\n", cfg.ChainConfig)
 	txConfig := statedb.NewEmptyTxConfig(common.BytesToHash(ctx.HeaderHash()))
+	fmt.Printf("TxConfig Hash: %s\n", txConfig.TxHash.Hex())
+
 	return k.ApplyMessageWithConfig(ctx, msg, tracer, commit, cfg, txConfig)
 }
 
@@ -322,15 +338,26 @@ func (k *Keeper) ApplyMessageWithConfig(
 	cfg *statedb.EVMConfig,
 	txConfig statedb.TxConfig,
 ) (*types.MsgEthereumTxResponse, error) {
+	fmt.Printf("\nApplyMessageWithConfig execution start:\n")
+	fmt.Printf("Block Height: %d\n", ctx.BlockHeight())
+	fmt.Printf("Block Time: %s\n", ctx.BlockTime())
+	fmt.Printf("Gas Price: %s\n", msg.GasPrice())
+	fmt.Printf("Initial Gas: %d\n", msg.Gas())
+
 	var (
 		ret   []byte // return bytes from evm execution
 		vmErr error  // vm errors do not effect consensus and are therefore not assigned to err
 	)
 
 	stateDB := statedb.New(ctx, k, txConfig)
+	fmt.Printf("StateDB created with nonce %d for address %s\n",
+		stateDB.GetNonce(msg.From()), msg.From().Hex())
+
 	evm := k.NewEVM(ctx, msg, cfg, tracer, stateDB)
+	fmt.Printf("EVM created with chainID %s\n", cfg.ChainConfig.ChainID)
 
 	leftoverGas := msg.Gas()
+	fmt.Printf("Initial leftover gas: %d\n", leftoverGas)
 
 	// Allow the tracer captures the tx level events, mainly the gas consumption.
 	vmCfg := evm.Config
@@ -340,23 +367,30 @@ func (k *Keeper) ApplyMessageWithConfig(
 			vmCfg.Tracer.CaptureTxEnd(leftoverGas)
 		}()
 	}
+	fmt.Println("EVM config:", vmCfg)
 
 	sender := vm.AccountRef(msg.From())
 	contractCreation := msg.To() == nil
 	isLondon := cfg.ChainConfig.IsLondon(evm.Context.BlockNumber)
+	fmt.Println("Sender address:", sender.Address().Hex())
+	fmt.Println("Contract creation:", contractCreation)
+	fmt.Println("Is London fork:", isLondon)
 
 	intrinsicGas, err := k.GetEthIntrinsicGas(ctx, msg, cfg.ChainConfig, contractCreation)
+	fmt.Printf("Intrinsic gas calculated: %d\n", intrinsicGas)
 	if err != nil {
-		// should have already been checked on Ante Handler
+		fmt.Printf("Intrinsic gas calculation failed: %v\n", err)
 		return nil, errorsmod.Wrap(err, "intrinsic gas failed")
 	}
+	fmt.Printf("Intrinsic gas calculated: %d\n", intrinsicGas)
 
-	// Should check again even if it is checked on Ante Handler, because eth_call don't go through Ante Handler.
 	if leftoverGas < intrinsicGas {
-		// eth_estimateGas will check for this exact error
+		fmt.Printf("Insufficient gas: have %d, need %d\n", leftoverGas, intrinsicGas)
 		return nil, errorsmod.Wrap(core.ErrIntrinsicGas, "apply message")
 	}
+
 	leftoverGas -= intrinsicGas
+	fmt.Printf("Gas after intrinsic deduction: %d\n", leftoverGas)
 
 	// access list preparation is moved from ante handler to here, because it's needed when `ApplyMessage` is called
 	// under contexts where ante handlers are not run, for example `eth_call` and `eth_estimateGas`.
@@ -368,43 +402,59 @@ func (k *Keeper) ApplyMessageWithConfig(
 	}
 
 	if contractCreation {
-		// take over the nonce management from evm:
-		// - reset sender's nonce to msg.Nonce() before calling evm.
-		// - increase sender's nonce by one no matter the result.
+		fmt.Printf("Executing contract creation\n")
 		stateDB.SetNonce(sender.Address(), msg.Nonce())
 		ret, _, leftoverGas, vmErr = evm.Create(sender, msg.Data(), leftoverGas, msg.Value())
+		fmt.Printf("Contract creation result:\nReturn data length: %d\nLeftover gas: %d\nError: %v\n",
+			len(ret), leftoverGas, vmErr)
 		stateDB.SetNonce(sender.Address(), msg.Nonce()+1)
 	} else {
+		fmt.Printf("Executing message call to %s\n", msg.To().Hex())
 		ret, leftoverGas, vmErr = evm.Call(sender, *msg.To(), msg.Data(), leftoverGas, msg.Value())
+		fmt.Printf("Message call result:\nReturn data length: %d\nLeftover gas: %d\nError: %v\n",
+			len(ret), leftoverGas, vmErr)
+		fmt.Println("EVM call result:", ret)
+		fmt.Println("Error: ", vmErr)
 	}
 
 	refundQuotient := params.RefundQuotient
+	fmt.Printf("Refund quotient: %d\n", refundQuotient)
 
 	// After EIP-3529: refunds are capped to gasUsed / 5
 	if isLondon {
 		refundQuotient = params.RefundQuotientEIP3529
 	}
+	fmt.Printf("Refund quotient after EIP-3529: %d\n", refundQuotient)
 
 	// calculate gas refund
 	if msg.Gas() < leftoverGas {
+		fmt.Printf("Gas limit is less than leftover gas: %d < %d\n", msg.Gas(), leftoverGas)
 		return nil, errorsmod.Wrap(types.ErrGasOverflow, "apply message")
 	}
 	// refund gas
 	temporaryGasUsed := msg.Gas() - leftoverGas
 	refund := GasToRefund(stateDB.GetRefund(), temporaryGasUsed, refundQuotient)
+	fmt.Printf("Gas refund calculated: %d\n", refund)
+	fmt.Printf("Final gas used (before minimum): %d\n", temporaryGasUsed)
 
 	// update leftoverGas and temporaryGasUsed with refund amount
 	leftoverGas += refund
 	temporaryGasUsed -= refund
 
+	fmt.Println("Leftovergas: ", leftoverGas)
+	fmt.Println("TemporaryGasUsed: ", temporaryGasUsed)
+
 	// EVM execution error needs to be available for the JSON-RPC client
 	var vmError string
 	if vmErr != nil {
+		fmt.Printf("VM error: %v\n", vmErr)
 		vmError = vmErr.Error()
+		fmt.Println("VM error string: ", vmError)
 	}
 
 	// The dirty states in `StateDB` is either committed or discarded after return
 	if commit {
+		fmt.Println("Committing stateDB")
 		if err := stateDB.Commit(); err != nil {
 			return nil, errorsmod.Wrap(err, "failed to commit stateDB")
 		}
@@ -416,6 +466,9 @@ func (k *Keeper) ApplyMessageWithConfig(
 	gasLimit := math.LegacyNewDec(int64(msg.Gas())) //#nosec G115 -- int overflow is not a concern here -- msg gas is not exceeding int64 max value
 	minGasMultiplier := k.GetMinGasMultiplier(ctx)
 	minimumGasUsed := gasLimit.Mul(minGasMultiplier)
+	fmt.Println("GasLimit: ", gasLimit)
+	fmt.Println("MinGasMultiplier: ", minGasMultiplier)
+	fmt.Println("MinimumGasUsed: ", minimumGasUsed)
 
 	if !minimumGasUsed.TruncateInt().IsUint64() {
 		return nil, errorsmod.Wrapf(types.ErrGasOverflow, "minimumGasUsed(%s) is not a uint64", minimumGasUsed.TruncateInt().String())
@@ -428,6 +481,13 @@ func (k *Keeper) ApplyMessageWithConfig(
 	gasUsed := math.LegacyMaxDec(minimumGasUsed, math.LegacyNewDec(int64(temporaryGasUsed))).TruncateInt().Uint64() //#nosec G115 -- int overflow is not a concern here
 	// reset leftoverGas, to be used by the tracer
 	leftoverGas = msg.Gas() - gasUsed
+
+	fmt.Printf("\nFinal execution results:\n")
+	fmt.Printf("Total gas used: %d\n", gasUsed)
+	fmt.Printf("Remaining gas: %d\n", leftoverGas)
+	fmt.Printf("VM Error: %v\n", vmError)
+	fmt.Printf("Return data length: %d\n", len(ret))
+	fmt.Printf("Number of logs: %d\n", len(stateDB.Logs()))
 
 	return &types.MsgEthereumTxResponse{
 		GasUsed: gasUsed,

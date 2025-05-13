@@ -266,6 +266,14 @@ func (evm *EVM) RunPrecompiledContract(
 	value *big.Int,
 	readOnly bool,
 ) (ret []byte, remainingGas uint64, err error) {
+	fmt.Printf("\nRunPrecompiledContract called with parameters:\n")
+	fmt.Printf("Precompile Address: %s\n", p.Address().Hex())
+	fmt.Printf("Caller Address: %s\n", caller.Address().Hex())
+	fmt.Printf("Input length: %d bytes\n", len(input))
+	fmt.Printf("Supplied Gas: %d\n", suppliedGas)
+	fmt.Printf("Value: %s\n", value.String())
+	fmt.Printf("ReadOnly: %v\n", readOnly)
+
 	return runPrecompiledContract(evm, p, caller, input, suppliedGas, value, readOnly)
 }
 
@@ -278,19 +286,46 @@ func runPrecompiledContract(
 	value *big.Int,
 	readOnly bool,
 ) (ret []byte, remainingGas uint64, err error) {
+	fmt.Printf("\nExecuting precompiled contract:\n")
+	fmt.Printf("Contract Address: %s\n", p.Address().Hex())
+
 	addrCopy := p.Address()
+	fmt.Printf("Address Copy: %s\n", addrCopy.Hex())
+
 	inputCopy := make([]byte, len(input))
 	copy(inputCopy, input)
+	fmt.Printf("Input Copy length: %d bytes\n", len(inputCopy))
 
+	fmt.Printf("Creating new precompiled contract instance\n")
 	contract := NewPrecompile(caller, AccountRef(addrCopy), value, suppliedGas)
 	contract.Input = inputCopy
+	fmt.Printf("Contract created with:\n")
+	fmt.Printf("- Caller: %s\n", caller.Address().Hex())
+	fmt.Printf("- Contract Address: %s\n", addrCopy.Hex())
+	fmt.Printf("- Value: %s\n", value.String())
+	fmt.Printf("- Gas: %d\n", suppliedGas)
 
 	gasCost := p.RequiredGas(input)
+	fmt.Printf("Required Gas for execution: %d\n", gasCost)
+
 	if !contract.UseGas(gasCost) {
+		fmt.Printf("❌ Insufficient gas: required %d, remaining %d\n", gasCost, contract.Gas)
 		return nil, contract.Gas, ErrOutOfGas
 	}
+	fmt.Printf("✓ Gas deducted successfully, remaining: %d\n", contract.Gas)
 
+	fmt.Printf("Executing precompiled contract...\n")
 	output, err := p.Run(evm, contract, readOnly)
+	fmt.Println("Output: ", output)
+	fmt.Println("Error: ", err)
+	if err != nil {
+		fmt.Printf("❌ Execution failed: %v\n", err)
+	} else {
+		fmt.Printf("✓ Execution successful\n")
+		fmt.Printf("Output length: %d bytes\n", len(output))
+	}
+	fmt.Printf("Remaining gas: %d\n", contract.Gas)
+
 	return output, contract.Gas, err
 }
 
